@@ -5,6 +5,13 @@ import { Question, MultiplayerMatch } from '../types';
 export const multiplayerService = {
   // Create a room and generate questions for fairness
   createMatch: async (playerId: string, topic: string, customCode?: string): Promise<MultiplayerMatch | null> => {
+    // 1. CLEANUP: Delete any existing 'waiting' matches by this player to prevent zombie rooms
+    await supabase
+        .from('matches')
+        .delete()
+        .eq('player1_id', playerId)
+        .eq('status', 'waiting');
+
     // Generate questions once so both players see the same quiz
     const questions = await generateQuestions(topic === 'random' ? 'General Knowledge' : topic);
     const code = customCode || Math.floor(100000 + Math.random() * 900000).toString();
@@ -54,11 +61,12 @@ export const multiplayerService = {
         status: 'playing'
       })
       .eq('id', matchId)
+      .eq('status', 'waiting') // Safety check: ensure it is STILL waiting
       .select()
       .single();
 
-    if (updateError) {
-        console.error("Quick match join failed (race condition?):", updateError);
+    if (updateError || !updatedMatch) {
+        // Someone else probably took it, or it was cancelled
         return null;
     }
 
@@ -76,6 +84,11 @@ export const multiplayerService = {
       .single();
 
     if (fetchError || !match) return null;
+
+    if (match.player1_id === playerId) {
+        // Cannot join own room
+        return null;
+    }
 
     // 2. Update match to set player 2 and status to playing
     const { data: updatedMatch, error: updateError } = await supabase
