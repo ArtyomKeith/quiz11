@@ -6,7 +6,7 @@ import { multiplayerService } from '../services/multiplayerService';
 import { supabase } from '../services/supabase';
 import { Question, MultiplayerMatch } from '../types';
 import GlassCard from '../components/GlassCard';
-import { ArrowLeft, CheckCircle, XCircle, Loader2, Sparkles, Clock, AlertTriangle, RefreshCcw, LogOut } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, Loader2, Sparkles, Clock, AlertTriangle, User, Users } from 'lucide-react';
 
 const TIMER_DURATION = 15;
 
@@ -79,34 +79,46 @@ const Quiz: React.FC = () => {
     init();
   }, [topic, mode, matchId]);
 
-  // Realtime Opponent Score Subscription
-  // FIXED: No longer depends on 'isPlayer1' state inside the callback to avoid stale closures.
+  // -- ROBUST SCORE SYNC (Realtime + Polling) --
   useEffect(() => {
-    if (mode === 'multi' && matchId && userId) {
-        const channel = supabase
-            .channel(`quiz-match-${matchId}`)
-            .on(
-                'postgres_changes',
-                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
-                (payload) => {
-                    const m = payload.new as MultiplayerMatch;
-                    
-                    // Logic: If I am Player 1 (my ID matches P1 ID in DB), show me P2 score.
-                    // If I am Player 2 (my ID does NOT match P1 ID), show me P1 score.
-                    if (m.player1_id === userId) {
-                        setOpponentScore(m.player2_score);
-                    } else {
-                        setOpponentScore(m.player1_score);
-                    }
-                }
-            )
-            .subscribe();
+    if (mode !== 'multi' || !matchId || !userId) return;
 
-        return () => {
-            supabase.removeChannel(channel);
-        };
-    }
-  }, [mode, matchId, userId]); // Dependencies cleaned up
+    // 1. Helper to update state based on match data
+    const syncState = (m: MultiplayerMatch) => {
+        // Determine if I am P1 or P2 based on ID check (more reliable than state closure)
+        const amIPlayer1 = m.player1_id === userId;
+        // If I am P1, opponent is P2. If I am P2, opponent is P1.
+        const enemyScore = amIPlayer1 ? m.player2_score : m.player1_score;
+        setOpponentScore(enemyScore);
+    };
+
+    // 2. Realtime Subscription (Fast updates)
+    const channel = supabase
+        .channel(`quiz-match-${matchId}`)
+        .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
+            (payload) => {
+                const m = payload.new as MultiplayerMatch;
+                syncState(m);
+            }
+        )
+        .subscribe();
+
+    // 3. Polling Interval (Backup for stability - every 3 seconds)
+    // This ensures that even if a socket packet is dropped, the score updates.
+    const intervalId = setInterval(async () => {
+        const m = await multiplayerService.getMatch(matchId);
+        if (m) {
+            syncState(m);
+        }
+    }, 3000);
+
+    return () => {
+        supabase.removeChannel(channel);
+        clearInterval(intervalId);
+    };
+  }, [mode, matchId, userId]);
 
   // Timer Logic
   useEffect(() => {
@@ -184,7 +196,6 @@ const Quiz: React.FC = () => {
     // Sync score if multiplayer
     if (mode === 'multi' && matchId) {
         // Optimistic UI update happened above, now send to DB
-        // We pass 'isPlayer1' here, which is fine as it's a value passed to a function, not an event listener
         await multiplayerService.updateScore(matchId, userId, newScore, isPlayer1);
     }
 
@@ -238,18 +249,18 @@ const Quiz: React.FC = () => {
           <div className="flex justify-center">
             {isWin ? <Sparkles size={80} className="text-yellow-400" /> : <CheckCircle size={80} className="text-blue-400" />}
           </div>
-          <div className="space-y-2">
-            <p className="text-xl">Твой счет</p>
-            <p className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 to-yellow-500">
-              {score}
-            </p>
-          </div>
-          {mode === 'multi' && (
+          <div className="grid grid-cols-2 gap-4">
              <div className="p-3 bg-white/10 rounded-xl border border-white/10">
-                 <p className="text-sm text-white/70">Счет соперника</p>
-                 <p className="font-bold mt-1 text-2xl">{opponentScore}</p>
+                 <p className="text-sm text-white/70">Вы</p>
+                 <p className="font-bold mt-1 text-2xl text-yellow-400">{score}</p>
              </div>
-          )}
+             {mode === 'multi' && (
+                 <div className="p-3 bg-white/10 rounded-xl border border-white/10">
+                     <p className="text-sm text-white/70">Соперник</p>
+                     <p className="font-bold mt-1 text-2xl text-red-400">{opponentScore}</p>
+                 </div>
+             )}
+          </div>
           <button 
             onClick={() => navigate('/')}
             className="w-full bg-white text-black font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-transform"
@@ -285,20 +296,29 @@ const Quiz: React.FC = () => {
       )}
 
       {/* Header */}
-      <div className="flex justify-between items-center mb-4 h-12 shrink-0">
-        <button onClick={handleBackClick} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors">
+      <div className="grid grid-cols-3 items-center mb-4 h-12 shrink-0">
+        <button onClick={handleBackClick} className="w-10 h-10 flex items-center justify-center bg-white/10 rounded-full hover:bg-white/20 transition-colors">
           <ArrowLeft size={20} />
         </button>
         
-        <div className="flex items-center space-x-2 bg-black/20 px-3 py-1 rounded-full border border-white/10">
-            <Clock size={14} className={timeLeft < 5 ? 'text-red-400 animate-pulse' : 'text-white/70'} />
-            <span className={`font-mono font-bold ${timeLeft < 5 ? 'text-red-400' : 'text-white'}`}>{timeLeft}s</span>
+        <div className="flex justify-center">
+             <div className="flex items-center space-x-2 bg-black/20 px-3 py-1 rounded-full border border-white/10">
+                <Clock size={14} className={timeLeft < 5 ? 'text-red-400 animate-pulse' : 'text-white/70'} />
+                <span className={`font-mono font-bold ${timeLeft < 5 ? 'text-red-400' : 'text-white'}`}>{timeLeft}s</span>
+            </div>
         </div>
 
-        <div className="flex flex-col items-end">
-             <div className="font-mono font-bold text-yellow-400 text-sm">{score}</div>
+        {/* Improved Scoreboard */}
+        <div className="flex flex-col items-end text-xs">
+             <div className="flex items-center gap-1">
+                 <span className="text-white/60">Вы:</span>
+                 <span className="font-mono font-bold text-yellow-400 text-sm">{score}</span>
+             </div>
              {mode === 'multi' && (
-                 <div className="font-mono text-[10px] text-red-300">Враг: {opponentScore}</div>
+                 <div className="flex items-center gap-1">
+                     <span className="text-white/60">Враг:</span>
+                     <span className="font-mono font-bold text-red-400 text-sm">{opponentScore}</span>
+                 </div>
              )}
         </div>
       </div>
@@ -311,8 +331,14 @@ const Quiz: React.FC = () => {
       </div>
 
       <div className="flex-grow flex flex-col justify-center items-center w-full min-h-0 mb-4 space-y-4 overflow-y-auto">
-          <GlassCard className="w-full p-4 text-center flex items-center justify-center min-h-[100px]">
-            <h2 className="text-lg font-bold leading-relaxed">{currentQuestion.text}</h2>
+          {/* Question Counter */}
+          <GlassCard className="w-full p-4 text-center flex flex-col items-center justify-center min-h-[120px] relative">
+            <div className="absolute top-3 left-0 w-full text-center">
+                <span className="bg-white/10 px-2 py-1 rounded-md text-[10px] font-bold text-white/50 tracking-wider">
+                    ВОПРОС {currentIndex + 1} / {questions.length}
+                </span>
+            </div>
+            <h2 className="text-lg font-bold leading-relaxed mt-4">{currentQuestion.text}</h2>
           </GlassCard>
 
           {showExplanation && (
