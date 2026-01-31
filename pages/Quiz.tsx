@@ -27,7 +27,10 @@ const Quiz: React.FC = () => {
   const [dataSaved, setDataSaved] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  
+  // User State
   const [userId, setUserId] = useState('');
+  const [isPlayer1, setIsPlayer1] = useState(false);
   
   // Exit Modal State
   const [showExitModal, setShowExitModal] = useState(false);
@@ -38,7 +41,6 @@ const Quiz: React.FC = () => {
 
   // Real Multiplayer State
   const [opponentScore, setOpponentScore] = useState(0);
-  const [isPlayer1, setIsPlayer1] = useState(false);
 
   // Fetch Questions & Setup
   useEffect(() => {
@@ -56,7 +58,11 @@ const Quiz: React.FC = () => {
         const match = await multiplayerService.getMatch(matchId);
         if (match && match.questions) {
             data = match.questions;
-            setIsPlayer1(match.player1_id === user.id);
+            const isP1 = match.player1_id === user.id;
+            setIsPlayer1(isP1);
+            
+            // Initial opponent score load
+            setOpponentScore(isP1 ? match.player2_score : match.player1_score);
         } else {
             console.error("Failed to load match or questions");
             navigate('/multiplayer'); // Abort
@@ -74,6 +80,7 @@ const Quiz: React.FC = () => {
   }, [topic, mode, matchId]);
 
   // Realtime Opponent Score Subscription
+  // FIXED: No longer depends on 'isPlayer1' state inside the callback to avoid stale closures.
   useEffect(() => {
     if (mode === 'multi' && matchId && userId) {
         const channel = supabase
@@ -83,8 +90,10 @@ const Quiz: React.FC = () => {
                 { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
                 (payload) => {
                     const m = payload.new as MultiplayerMatch;
-                    // I am player 1, so I watch player 2's score
-                    if (isPlayer1) {
+                    
+                    // Logic: If I am Player 1 (my ID matches P1 ID in DB), show me P2 score.
+                    // If I am Player 2 (my ID does NOT match P1 ID), show me P1 score.
+                    if (m.player1_id === userId) {
                         setOpponentScore(m.player2_score);
                     } else {
                         setOpponentScore(m.player1_score);
@@ -97,7 +106,7 @@ const Quiz: React.FC = () => {
             supabase.removeChannel(channel);
         };
     }
-  }, [mode, matchId, userId, isPlayer1]);
+  }, [mode, matchId, userId]); // Dependencies cleaned up
 
   // Timer Logic
   useEffect(() => {
@@ -175,6 +184,7 @@ const Quiz: React.FC = () => {
     // Sync score if multiplayer
     if (mode === 'multi' && matchId) {
         // Optimistic UI update happened above, now send to DB
+        // We pass 'isPlayer1' here, which is fine as it's a value passed to a function, not an event listener
         await multiplayerService.updateScore(matchId, userId, newScore, isPlayer1);
     }
 
