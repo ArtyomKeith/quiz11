@@ -1,29 +1,38 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from "../types";
 
-// Safe access to process.env.API_KEY to prevent "process is undefined" errors
+// Helper to safely get the API key from environment
 const getApiKey = () => {
     try {
-        if (typeof process !== 'undefined' && process.env) {
-            return process.env.API_KEY || '';
-        }
-        // Fallback for some window polyfills
-        if (typeof window !== 'undefined' && (window as any).process && (window as any).process.env) {
-            return (window as any).process.env.API_KEY || '';
+        // Vite 'define' replaces process.env.API_KEY with the actual string value during build.
+        // We use checks to avoid reference errors if it wasn't replaced.
+        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+            return process.env.API_KEY;
         }
     } catch (e) {
-        return '';
+        // Ignore errors accessing process
     }
     return '';
 }
 
 const apiKey = getApiKey();
-const ai = new GoogleGenAI({ apiKey });
+
+// INITIALIZATION FIX: 
+// Only initialize GoogleGenAI if a valid key exists.
+// Passing an empty string causes a fatal error that crashes the entire app startup.
+let ai: GoogleGenAI | null = null;
+if (apiKey && apiKey.length > 0) {
+    try {
+        ai = new GoogleGenAI({ apiKey });
+    } catch (error) {
+        console.warn("Failed to initialize Gemini AI client:", error);
+    }
+}
 
 export const generateQuestions = async (topic: string, count: number = 10): Promise<Question[]> => {
-  // If no API key is present, return mock data immediately to avoid API errors
-  if (!apiKey || apiKey === 'undefined') {
-    console.warn("No API key found. Returning mock questions.");
+  // Graceful fallback: If no AI client (missing key), return mock data immediately.
+  if (!ai || !apiKey) {
+    console.warn("No valid API key found. Returning mock questions. (Demo Mode)");
     return mockQuestions(topic);
   }
 
@@ -85,7 +94,6 @@ export const generateQuestions = async (topic: string, count: number = 10): Prom
 
 export const generateDailyQuestions = async (): Promise<Question[]> => {
   const topic = "Общие знания, Наука и Актуальные события мира";
-  // Explicitly requesting 10 questions for daily challenge
   return generateQuestions(topic, 10);
 };
 
@@ -93,10 +101,10 @@ export const generateDailyQuestions = async (): Promise<Question[]> => {
 const mockQuestions = (topic: string): Question[] => [
   {
     id: 'm1',
-    text: `Что является основным предметом изучения в теме "${topic}"? (Тестовый вопрос)`,
+    text: `Что является основным предметом изучения в теме "${topic}"? (Демо-режим)`,
     options: ['Инновации', 'История', 'Биология', 'Физика'],
     correctAnswerIndex: 0,
-    explanation: 'Это запасной вопрос, сервис AI недоступен.',
+    explanation: 'Это тестовый вопрос, так как API ключ не найден.',
   },
   {
     id: 'm2',
