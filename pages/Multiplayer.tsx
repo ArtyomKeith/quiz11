@@ -35,33 +35,57 @@ const Multiplayer: React.FC = () => {
     initUser();
   }, []);
 
-  // -- Realtime Subscription for Host --
+  // -- CENTRALIZED WAITING LOGIC (Fixes sync issues) --
+  // This effect runs whenever we have a match that is in 'waiting' status.
+  // It uses both Realtime sockets AND a polling interval as a backup.
   useEffect(() => {
-    if (view === 'room_create' && currentMatch) {
-        // Listen for Player 2 joining
-        const channel = supabase
-            .channel(`match-${currentMatch.id}`)
-            .on(
-                'postgres_changes',
-                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${currentMatch.id}` },
-                (payload) => {
-                    const updatedMatch = payload.new as MultiplayerMatch;
-                    if (updatedMatch.player2_id && updatedMatch.status === 'playing') {
-                        handleMatchFound(updatedMatch);
-                    }
-                }
-            )
-            .subscribe();
+    if (!currentMatch || currentMatch.status !== 'waiting') return;
 
-        return () => {
-            supabase.removeChannel(channel);
-        };
-    }
-  }, [view, currentMatch]);
+    const matchId = currentMatch.id;
+
+    // 1. Check logic to handle "Match Found"
+    const checkMatchStatus = async () => {
+        const { data } = await supabase
+            .from('matches')
+            .select('*')
+            .eq('id', matchId)
+            .single();
+        
+        if (data && data.player2_id && data.status === 'playing') {
+            handleMatchFound(data as MultiplayerMatch);
+        }
+    };
+
+    // 2. Realtime Subscription
+    const channel = supabase
+        .channel(`match-waiting-${matchId}`)
+        .on(
+            'postgres_changes',
+            { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
+            (payload) => {
+                const updatedMatch = payload.new as MultiplayerMatch;
+                if (updatedMatch.player2_id && updatedMatch.status === 'playing') {
+                    handleMatchFound(updatedMatch);
+                }
+            }
+        )
+        .subscribe();
+
+    // 3. Polling Interval (Backup every 2 seconds in case Realtime fails)
+    const intervalId = setInterval(checkMatchStatus, 2000);
+
+    return () => {
+        supabase.removeChannel(channel);
+        clearInterval(intervalId);
+    };
+  }, [currentMatch]); // Only re-run if currentMatch object changes identity or status
 
   // -- Actions --
 
   const handleMatchFound = (match: MultiplayerMatch) => {
+      // Prevent double navigation if component re-renders
+      if (view === 'found') return;
+
       setCurrentMatch(match);
       setView('found');
       setTimeout(() => {
@@ -77,6 +101,11 @@ const Multiplayer: React.FC = () => {
     setCurrentMatch(null);
   };
 
+  const handleBackToMenu = () => {
+      setView('menu');
+      setError(null);
+  }
+
   const startQuickSearch = async () => {
     if (!userId) return;
     setView('quick_search');
@@ -91,24 +120,10 @@ const Multiplayer: React.FC = () => {
     }
 
     // 2. If no match found, create one and wait
+    // We set currentMatch, which triggers the useEffect above to start listening/polling
     const newMatch = await multiplayerService.createMatch(userId, 'random');
     if (newMatch) {
         setCurrentMatch(newMatch);
-        // We stay in 'quick_search' view but logically we are now waiting like a host
-        // We need to listen to this match just like room_create
-        const channel = supabase
-            .channel(`match-${newMatch.id}`)
-            .on(
-                'postgres_changes',
-                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${newMatch.id}` },
-                (payload) => {
-                    const updatedMatch = payload.new as MultiplayerMatch;
-                    if (updatedMatch.player2_id) {
-                        handleMatchFound(updatedMatch);
-                    }
-                }
-            )
-            .subscribe();
     } else {
         setError("Не удалось создать матч");
         setView('menu');
@@ -161,6 +176,12 @@ const Multiplayer: React.FC = () => {
 
   const renderMenu = () => (
     <div className="w-full max-w-sm space-y-4 animate-fade-in">
+        <div className="flex items-center justify-between mb-2">
+            <button onClick={() => navigate('/')} className="flex items-center text-white/50 hover:text-white text-sm">
+                <ArrowLeft size={16} className="mr-1"/> На главную
+            </button>
+        </div>
+
         <GlassCard onClick={startQuickSearch} className="group relative overflow-hidden">
             <div className="flex items-center space-x-4 relative z-10">
                 <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-300 group-hover:bg-blue-500 group-hover:text-white transition-colors">
@@ -192,7 +213,7 @@ const Multiplayer: React.FC = () => {
 
   const renderRoomMenu = () => (
       <div className="w-full max-w-sm space-y-4 animate-fade-in">
-          <button onClick={() => { setView('menu'); setError(null); }} className="flex items-center text-white/50 hover:text-white text-sm mb-2">
+          <button onClick={handleBackToMenu} className="flex items-center text-white/50 hover:text-white text-sm mb-2">
               <ArrowLeft size={16} className="mr-1"/> Назад
           </button>
           
@@ -340,7 +361,7 @@ const Multiplayer: React.FC = () => {
   );
 
   return (
-    <div className="h-[calc(100vh-80px)] px-4 flex flex-col items-center justify-center space-y-8">
+    <div className="h-full px-4 flex flex-col items-center justify-center space-y-8">
       
       <div className="relative shrink-0">
         {(view === 'quick_search' || view === 'room_create' || view === 'room_join') && (
