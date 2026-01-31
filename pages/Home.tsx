@@ -4,8 +4,18 @@ import GlassCard from '../components/GlassCard';
 import { POPULAR_TOPICS } from '../constants';
 import { db } from '../services/db';
 import { PlayerProfile } from '../types';
-import { Flame, Play, Zap, Sparkles, ArrowRight, Loader2, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
-import * as LucideIcons from 'lucide-react';
+import { Flame, Play, Zap, Sparkles, ArrowRight, Loader2, AlertTriangle, Trash2, Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen, HelpCircle } from 'lucide-react';
+
+// Explicit mapping avoids "Chunk size" warning and loading unused icons
+const iconMap: Record<string, React.ElementType> = {
+  Cpu: Cpu,
+  FlaskConical: FlaskConical,
+  Hourglass: Hourglass,
+  Music: Music,
+  Globe: Globe,
+  BookOpen: BookOpen,
+  HelpCircle: HelpCircle
+};
 
 const Home: React.FC = () => {
   const navigate = useNavigate();
@@ -70,15 +80,9 @@ const Home: React.FC = () => {
               <p className="font-mono bg-black/30 p-2 rounded mb-2 overflow-x-auto whitespace-pre-wrap">
                   {dbError}
               </p>
-              <div className="text-white/60 mb-2">
-                 {dbError.includes('relation "public.profiles" does not exist') && "Таблица 'profiles' не создана. См. SQL ниже."}
-                 {dbError.includes('row-level security') && "Запустите SQL скрипт для прав доступа."}
-                 {dbError.includes('syntax for type uuid') && "ID формат исправлен, попробуйте сбросить ID."}
-              </div>
               
               <button 
                 onClick={() => {
-                    // Очистка локального ID, чтобы сгенерировать новый (решает проблемы с битыми UUID)
                     localStorage.removeItem('glassmind_user_id_v4');
                     window.location.reload();
                 }}
@@ -165,7 +169,7 @@ const Home: React.FC = () => {
         </h3>
         <div className="grid grid-cols-2 gap-3">
           {POPULAR_TOPICS.map((topic) => {
-             const IconComponent = (LucideIcons as any)[topic.icon] || LucideIcons.HelpCircle;
+             const IconComponent = iconMap[topic.icon] || HelpCircle;
              return (
               <GlassCard 
                 key={topic.id} 
