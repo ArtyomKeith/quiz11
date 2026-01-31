@@ -12,8 +12,6 @@
       if (typeof window !== 'undefined') {
         window.process = window.process || {};
         window.process.env = window.process.env || {};
-        // Безопасная инициализация
-        if (!window.process.env.API_KEY) window.process.env.API_KEY = '';
       }
     </script>
     <style>
