@@ -8,8 +8,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script>
-      // Polyfill для process.env, чтобы библиотека не ломала приложение в браузере
-      window.process = { env: { API_KEY: '' } };
+      // Polyfill для process.env
+      if (typeof window !== 'undefined') {
+        window.process = window.process || {};
+        window.process.env = window.process.env || {};
+        // Безопасная инициализация
+        if (!window.process.env.API_KEY) window.process.env.API_KEY = '';
+      }
     </script>
     <style>
       body {
@@ -59,27 +64,25 @@
         100% { transform: translate(0, 0) scale(1); }
       }
       
-      /* Scrollbar hiding for clean UI */
       ::-webkit-scrollbar {
         width: 0px;
         background: transparent;
       }
     </style>
-  <script type="importmap">
+    <!-- Importmap удален, так как Vercel собирает проект через Vite/Webpack и использует package.json -->
+<script type="importmap">
 {
   "imports": {
-    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
     "react/": "https://esm.sh/react@^19.2.4/",
     "react": "https://esm.sh/react@^19.2.4",
-    "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0",
-    "recharts": "https://esm.sh/recharts@^3.7.0",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.3"
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
+    "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.93.3"
   }
 }
 </script>
-<link rel="stylesheet" href="/index.css">
 </head>
   <body>
     <div class="mesh-bg">
@@ -88,8 +91,6 @@
       <div class="blob blob-3"></div>
     </div>
     <div id="root" class="h-full"></div>
-    <!-- Добавляем точку входа для React приложения -->
     <script type="module" src="./index.tsx"></script>
-  <script type="module" src="/index.tsx"></script>
-</body>
+  </body>
 </html>
