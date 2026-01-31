@@ -32,6 +32,18 @@ export interface Topic {
   color: string;
 }
 
+export interface MultiplayerMatch {
+  id: string;
+  code: string;
+  topic: string;
+  status: 'waiting' | 'playing' | 'finished';
+  player1_id: string;
+  player2_id: string | null;
+  player1_score: number;
+  player2_score: number;
+  questions: Question[]; // JSON stored in DB
+}
+
 // Telegram WebApp Types
 declare global {
   interface Window {
