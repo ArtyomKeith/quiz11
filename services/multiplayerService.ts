@@ -34,19 +34,35 @@ export const multiplayerService = {
 
   // Find an open quick match
   findQuickMatch: async (playerId: string): Promise<MultiplayerMatch | null> => {
-    // Look for waiting matches where I am not player 1
+    // 1. Look for ANY waiting match where I am not player 1
     const { data, error } = await supabase
       .from('matches')
-      .select('*')
+      .select('id, questions') // Just get ID first for speed
       .eq('status', 'waiting')
       .neq('player1_id', playerId)
       .limit(1);
 
     if (error || !data || data.length === 0) return null;
 
-    // Join the first found match
-    const match = data[0];
-    return multiplayerService.joinMatch(match.code, playerId);
+    const matchId = data[0].id;
+
+    // 2. Direct Update by ID (Much faster and reliable than searching by code)
+    const { data: updatedMatch, error: updateError } = await supabase
+      .from('matches')
+      .update({
+        player2_id: playerId,
+        status: 'playing'
+      })
+      .eq('id', matchId)
+      .select()
+      .single();
+
+    if (updateError) {
+        console.error("Quick match join failed (race condition?):", updateError);
+        return null;
+    }
+
+    return updatedMatch as MultiplayerMatch;
   },
 
   // Join an existing match by code
