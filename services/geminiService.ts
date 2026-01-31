@@ -1,41 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from "../types";
 
-// Helper to safely get the API key from environment
-const getApiKey = () => {
-    try {
-        // Vite 'define' replaces process.env.API_KEY with the actual string value during build.
-        // We use checks to avoid reference errors if it wasn't replaced.
-        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-            return process.env.API_KEY;
-        }
-    } catch (e) {
-        // Ignore errors accessing process
-    }
-    return '';
-}
-
-const apiKey = getApiKey();
-
-// INITIALIZATION FIX: 
-// Only initialize GoogleGenAI if a valid key exists.
-// Passing an empty string causes a fatal error that crashes the entire app startup.
-let ai: GoogleGenAI | null = null;
-if (apiKey && apiKey.length > 0) {
-    try {
-        ai = new GoogleGenAI({ apiKey });
-    } catch (error) {
-        console.warn("Failed to initialize Gemini AI client:", error);
-    }
-}
+// Initialize Gemini AI client directly with API key from environment
+// as per strict coding guidelines.
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const generateQuestions = async (topic: string, count: number = 10): Promise<Question[]> => {
-  // Graceful fallback: If no AI client (missing key), return mock data immediately.
-  if (!ai || !apiKey) {
-    console.warn("No valid API key found. Returning mock questions. (Demo Mode)");
-    return mockQuestions(topic);
-  }
-
   const model = "gemini-3-flash-preview";
   
   // Adding a random seed and specific instructions for variety
@@ -82,7 +52,10 @@ export const generateQuestions = async (topic: string, count: number = 10): Prom
     const jsonText = response.text;
     if (!jsonText) throw new Error("No data received from Gemini");
 
-    const questions = JSON.parse(jsonText) as Question[];
+    // Clean any potential markdown wrapping
+    const cleanJson = jsonText.replace(/```json|```/g, '').trim();
+
+    const questions = JSON.parse(cleanJson) as Question[];
     // Ensure IDs are unique-ish if model generates dupes
     return questions.map((q, idx) => ({ ...q, id: `${topic}-${Date.now()}-${idx}` }));
 
@@ -104,7 +77,7 @@ const mockQuestions = (topic: string): Question[] => [
     text: `Что является основным предметом изучения в теме "${topic}"? (Демо-режим)`,
     options: ['Инновации', 'История', 'Биология', 'Физика'],
     correctAnswerIndex: 0,
-    explanation: 'Это тестовый вопрос, так как API ключ не найден.',
+    explanation: 'Это тестовый вопрос, так как API ключ не найден или произошла ошибка.',
   },
   {
     id: 'm2',
