@@ -2,17 +2,20 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { generateQuestions, generateDailyQuestions } from '../services/geminiService';
 import { db } from '../services/db';
-import { Question } from '../types';
+import { multiplayerService } from '../services/multiplayerService';
+import { supabase } from '../services/supabase';
+import { Question, MultiplayerMatch } from '../types';
 import GlassCard from '../components/GlassCard';
 import { ArrowLeft, CheckCircle, XCircle, Loader2, Sparkles, Clock, AlertTriangle, RefreshCcw, LogOut } from 'lucide-react';
 
-const TIMER_DURATION = 15; // Seconds
+const TIMER_DURATION = 15;
 
 const Quiz: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const topic = searchParams.get('topic') || 'general';
   const mode = searchParams.get('mode') || 'single';
+  const matchId = searchParams.get('matchId');
 
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -24,6 +27,7 @@ const Quiz: React.FC = () => {
   const [dataSaved, setDataSaved] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [userId, setUserId] = useState('');
   
   // Exit Modal State
   const [showExitModal, setShowExitModal] = useState(false);
@@ -32,29 +36,71 @@ const Quiz: React.FC = () => {
   const [timeLeft, setTimeLeft] = useState(TIMER_DURATION);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
 
-  // Multiplayer Simulation State
+  // Real Multiplayer State
   const [opponentScore, setOpponentScore] = useState(0);
+  const [isPlayer1, setIsPlayer1] = useState(false);
 
-  // Fetch Questions
+  // Fetch Questions & Setup
   useEffect(() => {
-    const fetchQuestions = async () => {
+    const init = async () => {
       setLoading(true);
+      const user = await db.getUser();
+      setUserId(user.id);
+
       let data: Question[] = [];
+
       if (mode === 'daily') {
         data = await generateDailyQuestions();
+      } else if (mode === 'multi' && matchId) {
+        // Load match data to ensure sync
+        const match = await multiplayerService.getMatch(matchId);
+        if (match && match.questions) {
+            data = match.questions;
+            setIsPlayer1(match.player1_id === user.id);
+        } else {
+            console.error("Failed to load match or questions");
+            navigate('/multiplayer'); // Abort
+            return;
+        }
       } else {
         data = await generateQuestions(topic);
       }
+      
       setQuestions(data);
       setLoading(false);
       setIsTimerRunning(true);
     };
-    fetchQuestions();
-  }, [topic, mode]);
+    init();
+  }, [topic, mode, matchId]);
+
+  // Realtime Opponent Score Subscription
+  useEffect(() => {
+    if (mode === 'multi' && matchId && userId) {
+        const channel = supabase
+            .channel(`quiz-match-${matchId}`)
+            .on(
+                'postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
+                (payload) => {
+                    const m = payload.new as MultiplayerMatch;
+                    // I am player 1, so I watch player 2's score
+                    if (isPlayer1) {
+                        setOpponentScore(m.player2_score);
+                    } else {
+                        setOpponentScore(m.player1_score);
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }
+  }, [mode, matchId, userId, isPlayer1]);
 
   // Timer Logic
   useEffect(() => {
-    // Timer stops if modal is open (isTimerRunning set to false on back click)
     if (!isTimerRunning || finished || loading) return;
 
     if (timeLeft <= 0) {
@@ -69,19 +115,8 @@ const Quiz: React.FC = () => {
     return () => clearInterval(timerId);
   }, [timeLeft, isTimerRunning, finished, loading]);
 
-  // Opponent logic (simulation)
-  useEffect(() => {
-    if (mode !== 'multi' || finished) return;
-    const interval = setInterval(() => {
-        if (Math.random() > 0.6) {
-            setOpponentScore(prev => prev + 100);
-        }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [mode, finished]);
-
   const saveData = async () => {
-    if (mode === 'multi') return;
+    if (mode === 'multi') return; // Multi data is saved incrementally
     setIsSaving(true);
     setSaveError(false);
     try {
@@ -95,7 +130,6 @@ const Quiz: React.FC = () => {
     }
   };
 
-  // Save to DB when finished
   useEffect(() => {
       if (finished && !dataSaved && mode !== 'multi' && !isSaving && !saveError) {
           saveData();
@@ -104,11 +138,9 @@ const Quiz: React.FC = () => {
 
   const handleTimeOut = () => {
     setIsTimerRunning(false);
-    setSelectedOption(-1); // -1 indicates timeout
+    setSelectedOption(-1); 
     setShowExplanation(true);
-    
-    // Auto advance after showing explanation
-    setTimeout(nextQuestion, 3500); // Slightly longer to read explanation
+    setTimeout(nextQuestion, 3500);
   };
 
   const nextQuestion = () => {
@@ -124,29 +156,35 @@ const Quiz: React.FC = () => {
     }
   };
 
-  const handleOptionClick = (index: number) => {
+  const handleOptionClick = async (index: number) => {
     if (selectedOption !== null) return;
 
-    setIsTimerRunning(false); // Pause timer
+    setIsTimerRunning(false);
     setSelectedOption(index);
     setShowExplanation(true);
 
     const isCorrect = index === questions[currentIndex].correctAnswerIndex;
+    let newScore = score;
     if (isCorrect) {
-        // Score calculation includes time bonus
         const timeBonus = Math.floor(timeLeft * 2);
-        setScore((prev) => prev + 100 + timeBonus + (mode === 'daily' ? 50 : 0));
+        const points = 100 + timeBonus + (mode === 'daily' ? 50 : 0);
+        newScore = score + points;
+        setScore(newScore);
     }
 
-    setTimeout(nextQuestion, 3000); // 3s to read explanation
+    // Sync score if multiplayer
+    if (mode === 'multi' && matchId) {
+        // Optimistic UI update happened above, now send to DB
+        await multiplayerService.updateScore(matchId, userId, newScore, isPlayer1);
+    }
+
+    setTimeout(nextQuestion, 3000);
   };
 
-  // --- Exit Logic ---
   const handleBackClick = () => {
     if (finished) {
         navigate('/');
     } else {
-        // Pause timer and show modal
         setIsTimerRunning(false);
         setShowExitModal(true);
     }
@@ -158,7 +196,6 @@ const Quiz: React.FC = () => {
 
   const cancelExit = () => {
       setShowExitModal(false);
-      // Only resume timer if we haven't selected an option yet (meaning we are actively thinking)
       if (selectedOption === null) {
           setIsTimerRunning(true);
       }
@@ -171,49 +208,36 @@ const Quiz: React.FC = () => {
           <div className="absolute inset-0 bg-blue-500 rounded-full blur-xl opacity-50 animate-pulse"></div>
           <Loader2 size={64} className="animate-spin text-white relative z-10" />
         </div>
-        <h2 className="mt-6 text-2xl font-bold">Генерация...</h2>
+        <h2 className="mt-6 text-2xl font-bold">
+            {mode === 'multi' ? 'Синхронизация матча...' : 'Генерация...'}
+        </h2>
       </div>
     );
   }
 
   if (finished) {
     const isWin = mode === 'multi' ? score > opponentScore : score > 200;
+    const isDraw = mode === 'multi' && score === opponentScore;
 
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 animate-fade-in">
         <GlassCard className="w-full text-center space-y-6">
-          <h1 className="text-3xl font-bold">{isWin ? 'Победа!' : 'Завершено!'}</h1>
+          <h1 className="text-3xl font-bold">
+             {mode === 'multi' ? (isDraw ? 'Ничья!' : isWin ? 'Победа!' : 'Поражение') : 'Завершено!'}
+          </h1>
           <div className="flex justify-center">
             {isWin ? <Sparkles size={80} className="text-yellow-400" /> : <CheckCircle size={80} className="text-blue-400" />}
           </div>
           <div className="space-y-2">
-            <p className="text-xl">Счет за игру</p>
+            <p className="text-xl">Твой счет</p>
             <p className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 to-yellow-500">
               {score}
             </p>
-            {mode !== 'multi' && (
-                <div className="min-h-8 flex flex-col items-center justify-center gap-2">
-                    {isSaving ? (
-                         <p className="text-sm text-white/50 flex justify-center items-center gap-2"><Loader2 size={12} className="animate-spin"/> Сохранение...</p>
-                    ) : saveError ? (
-                         <div className="flex flex-col items-center gap-2">
-                             <p className="text-sm text-red-400 animate-pulse flex items-center justify-center gap-1">
-                                 <AlertTriangle size={14}/> Ошибка базы данных
-                             </p>
-                             <button onClick={saveData} className="flex items-center gap-1 text-xs bg-red-500/20 px-2 py-1 rounded hover:bg-red-500/40 transition-colors">
-                                 <RefreshCcw size={10} /> Повторить
-                             </button>
-                         </div>
-                    ) : (
-                         <p className="text-sm text-green-300 animate-pulse">Сохранено в профиль</p>
-                    )}
-                </div>
-            )}
           </div>
           {mode === 'multi' && (
-             <div className="p-3 bg-white/10 rounded-xl">
-                 <p className="text-sm text-white/70">Соперник: {opponentScore}</p>
-                 <p className="font-bold mt-1 text-lg">{score > opponentScore ? "Ты выиграл!" : "Ты проиграл"}</p>
+             <div className="p-3 bg-white/10 rounded-xl border border-white/10">
+                 <p className="text-sm text-white/70">Счет соперника</p>
+                 <p className="font-bold mt-1 text-2xl">{opponentScore}</p>
              </div>
           )}
           <button 
@@ -232,42 +256,30 @@ const Quiz: React.FC = () => {
   return (
     <div className="h-full flex flex-col p-4 relative">
       
-      {/* Exit Confirmation Modal */}
       {showExitModal && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
               <GlassCard className="w-full max-w-sm text-center border-red-500/30">
                   <div className="flex justify-center mb-4 text-red-400">
                       <AlertTriangle size={48} />
                   </div>
-                  <h2 className="text-xl font-bold mb-2">Закончить викторину?</h2>
+                  <h2 className="text-xl font-bold mb-2">Сдаться?</h2>
                   <p className="text-white/60 text-sm mb-6">
-                      Текущий прогресс и заработанные очки ({score}) будут потеряны.
+                      Прогресс будет потерян.
                   </p>
                   <div className="grid grid-cols-2 gap-3">
-                      <button 
-                        onClick={cancelExit}
-                        className="bg-white/10 hover:bg-white/20 text-white font-bold py-3 rounded-xl transition-colors"
-                      >
-                          Остаться
-                      </button>
-                      <button 
-                        onClick={confirmExit}
-                        className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
-                      >
-                          <LogOut size={16} /> Выйти
-                      </button>
+                      <button onClick={cancelExit} className="bg-white/10 hover:bg-white/20 text-white font-bold py-3 rounded-xl transition-colors">Нет</button>
+                      <button onClick={confirmExit} className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl transition-colors">Выйти</button>
                   </div>
               </GlassCard>
           </div>
       )}
 
-      {/* Header with Timer */}
+      {/* Header */}
       <div className="flex justify-between items-center mb-4 h-12 shrink-0">
         <button onClick={handleBackClick} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors">
           <ArrowLeft size={20} />
         </button>
         
-        {/* Timer UI */}
         <div className="flex items-center space-x-2 bg-black/20 px-3 py-1 rounded-full border border-white/10">
             <Clock size={14} className={timeLeft < 5 ? 'text-red-400 animate-pulse' : 'text-white/70'} />
             <span className={`font-mono font-bold ${timeLeft < 5 ? 'text-red-400' : 'text-white'}`}>{timeLeft}s</span>
@@ -275,11 +287,12 @@ const Quiz: React.FC = () => {
 
         <div className="flex flex-col items-end">
              <div className="font-mono font-bold text-yellow-400 text-sm">{score}</div>
-             <div className="text-[10px] text-white/50">{currentIndex + 1} / {questions.length}</div>
+             {mode === 'multi' && (
+                 <div className="font-mono text-[10px] text-red-300">Враг: {opponentScore}</div>
+             )}
         </div>
       </div>
 
-      {/* Progress Bar */}
       <div className="w-full h-1 bg-white/10 rounded-full mb-4 shrink-0 overflow-hidden">
         <div 
           className="h-full bg-blue-500 transition-all duration-300"
@@ -287,14 +300,11 @@ const Quiz: React.FC = () => {
         ></div>
       </div>
 
-      {/* Main Content Area - Question & Explanation */}
       <div className="flex-grow flex flex-col justify-center items-center w-full min-h-0 mb-4 space-y-4 overflow-y-auto">
-          {/* Question Card: Smaller frame, auto height */}
           <GlassCard className="w-full p-4 text-center flex items-center justify-center min-h-[100px]">
             <h2 className="text-lg font-bold leading-relaxed">{currentQuestion.text}</h2>
           </GlassCard>
 
-          {/* Explanation Toast - Inline */}
           {showExplanation && (
             <div className="w-full animate-fade-in-up bg-slate-900/90 backdrop-blur-xl p-4 rounded-xl border border-blue-500/50 shadow-2xl shrink-0">
                <p className="text-sm text-blue-100 leading-snug text-center">
@@ -312,7 +322,6 @@ const Quiz: React.FC = () => {
           )}
       </div>
 
-      {/* Options - Fixed at bottom area */}
       <div className="space-y-2 shrink-0 pb-2">
         {currentQuestion.options.map((option, idx) => {
           let statusClass = 'bg-white/10 active:bg-white/20';
