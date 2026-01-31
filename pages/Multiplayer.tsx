@@ -2,10 +2,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import GlassCard from '../components/GlassCard';
 import { POPULAR_TOPICS } from '../constants';
-import * as LucideIcons from 'lucide-react';
-import { Swords, Search, User, Zap, Lock, Copy, ArrowRight, ArrowLeft, Users, Grid, Sparkles, AlertCircle } from 'lucide-react';
+import { Swords, User, Zap, Lock, Copy, ArrowRight, ArrowLeft, Users, Sparkles, AlertCircle, HelpCircle, Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen } from 'lucide-react';
 
 type MultiState = 'menu' | 'quick_search' | 'room_menu' | 'topic_selection' | 'room_create' | 'room_join' | 'found';
+
+// Explicit mapping prevents loading the entire icon library
+const iconMap: Record<string, React.ElementType> = {
+  Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen, HelpCircle
+};
 
 const Multiplayer: React.FC = () => {
   const navigate = useNavigate();
@@ -240,7 +244,7 @@ const Multiplayer: React.FC = () => {
               </GlassCard>
 
               {POPULAR_TOPICS.map((topic) => {
-                 const IconComponent = (LucideIcons as any)[topic.icon] || LucideIcons.HelpCircle;
+                 const IconComponent = iconMap[topic.icon] || HelpCircle;
                  return (
                   <GlassCard 
                     key={topic.id} 
