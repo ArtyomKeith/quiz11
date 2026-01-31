@@ -9,8 +9,10 @@ import Leaderboard from './pages/Leaderboard';
 // Wrapper to conditionally render Nav
 const Layout: React.FC = () => {
   const location = useLocation();
-  // Hide main nav on Quiz page to focus on the game and its specific UI
-  const isQuiz = location.pathname === '/quiz';
+  
+  // Hide main nav on Quiz page AND Multiplayer page to focus on the game/inputs
+  // This prevents the bottom nav from covering the "Join" button or input fields
+  const shouldHideNav = location.pathname === '/quiz' || location.pathname === '/multiplayer';
 
   return (
     <div className="h-full flex flex-col relative z-10 selection:bg-pink-500/30">
@@ -23,7 +25,7 @@ const Layout: React.FC = () => {
               <Route path="/profile" element={<div className="p-8 text-center text-white/50">Профиль (Скоро)</div>} />
             </Routes>
         </div>
-        {!isQuiz && <Navigation />}
+        {!shouldHideNav && <Navigation />}
     </div>
   );
 };
