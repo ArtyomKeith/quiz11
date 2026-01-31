@@ -1,11 +1,34 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from "../types";
 
-// Initialize Gemini AI client directly with API key from environment
-// as per strict coding guidelines.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to safely get the API key
+const getApiKey = () => {
+    // Check if process.env.API_KEY is a non-empty string
+    const key = process.env.API_KEY;
+    return (key && key.length > 0) ? key : null;
+}
+
+const apiKey = getApiKey();
+
+// INITIALIZATION FIX:
+// We do NOT call `new GoogleGenAI` if the key is missing.
+// This prevents the "ApiError: API key must be set" crash at startup.
+let ai: GoogleGenAI | null = null;
+if (apiKey) {
+    try {
+        ai = new GoogleGenAI({ apiKey });
+    } catch (e) {
+        console.error("Gemini Client Init Failed:", e);
+    }
+}
 
 export const generateQuestions = async (topic: string, count: number = 10): Promise<Question[]> => {
+  // If no AI client, return mock data immediately without crashing
+  if (!ai) {
+      console.warn("Gemini API Key is missing or invalid. Returning mock data.");
+      return mockQuestions(topic);
+  }
+
   const model = "gemini-3-flash-preview";
   
   // Adding a random seed and specific instructions for variety
