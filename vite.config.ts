@@ -1,17 +1,24 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
-  plugins: [react()],
-  build: {
-    // Увеличиваем лимит предупреждения, чтобы Vercel не ругался в логах
-    chunkSizeWarningLimit: 1600, 
-    rollupOptions: {
-      output: {
-        // Убираем manualChunks, чтобы Vite сам решил, как лучше разбить файлы.
-        // Это безопаснее и предотвращает ошибки "белого экрана" из-за порядка загрузки.
-        manualChunks: undefined 
+export default defineConfig(({ mode }) => {
+  // Load env file based on `mode` in the current working directory.
+  // Set the third parameter to '' to load all env regardless of the `VITE_` prefix.
+  const env = loadEnv(mode, process.cwd(), '');
+  
+  return {
+    plugins: [react()],
+    // Define process.env.API_KEY globally so it works in the browser
+    define: {
+      'process.env.API_KEY': JSON.stringify(env.API_KEY || '')
+    },
+    build: {
+      chunkSizeWarningLimit: 1600, 
+      rollupOptions: {
+        output: {
+          manualChunks: undefined 
+        }
       }
     }
-  }
+  };
 });
