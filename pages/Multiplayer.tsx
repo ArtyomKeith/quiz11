@@ -2,11 +2,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import GlassCard from '../components/GlassCard';
 import { POPULAR_TOPICS } from '../constants';
-import { Swords, User, Zap, Lock, Copy, ArrowRight, ArrowLeft, Users, Sparkles, AlertCircle, HelpCircle, Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen } from 'lucide-react';
+import { db } from '../services/db';
+import { multiplayerService } from '../services/multiplayerService';
+import { supabase } from '../services/supabase';
+import { Swords, User, Zap, Lock, Copy, ArrowRight, ArrowLeft, Users, Sparkles, AlertCircle, HelpCircle, Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen, Loader2 } from 'lucide-react';
+import { MultiplayerMatch } from '../types';
 
 type MultiState = 'menu' | 'quick_search' | 'room_menu' | 'topic_selection' | 'room_create' | 'room_join' | 'found';
 
-// Explicit mapping prevents loading the entire icon library
 const iconMap: Record<string, React.ElementType> = {
   Cpu, FlaskConical, Hourglass, Music, Globe, BookOpen, HelpCircle
 };
@@ -14,101 +17,144 @@ const iconMap: Record<string, React.ElementType> = {
 const Multiplayer: React.FC = () => {
   const navigate = useNavigate();
   const [view, setView] = useState<MultiState>('menu');
-  const [opponent, setOpponent] = useState<string | null>(null);
   const [roomCode, setRoomCode] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [selectedTopic, setSelectedTopic] = useState<string>('random');
   const [customTopic, setCustomTopic] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
+  const [currentMatch, setCurrentMatch] = useState<MultiplayerMatch | null>(null);
+  const [userId, setUserId] = useState<string>('');
 
-  // Ref to hold the timer ID so we can cancel it
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Cleanup on unmount
+  // Setup User ID
   useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+    const initUser = async () => {
+        const u = await db.getUser();
+        setUserId(u.id);
     };
+    initUser();
   }, []);
+
+  // -- Realtime Subscription for Host --
+  useEffect(() => {
+    if (view === 'room_create' && currentMatch) {
+        // Listen for Player 2 joining
+        const channel = supabase
+            .channel(`match-${currentMatch.id}`)
+            .on(
+                'postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${currentMatch.id}` },
+                (payload) => {
+                    const updatedMatch = payload.new as MultiplayerMatch;
+                    if (updatedMatch.player2_id && updatedMatch.status === 'playing') {
+                        handleMatchFound(updatedMatch);
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }
+  }, [view, currentMatch]);
 
   // -- Actions --
 
+  const handleMatchFound = (match: MultiplayerMatch) => {
+      setCurrentMatch(match);
+      setView('found');
+      setTimeout(() => {
+          // Pass match ID and user ID so Quiz page knows who is who
+          navigate(`/quiz?topic=${encodeURIComponent(match.topic)}&mode=multi&matchId=${match.id}`);
+      }, 1500);
+  };
+
   const handleCancel = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
     setIsJoining(false);
     setError(null);
     setView('menu');
+    setCurrentMatch(null);
   };
 
-  const startQuickSearch = () => {
+  const startQuickSearch = async () => {
+    if (!userId) return;
     setView('quick_search');
-    setIsJoining(false);
+    setIsJoining(true);
     setSelectedTopic('random'); 
     
-    // Simulate finding logic
-    timerRef.current = setTimeout(() => {
-      setOpponent("RandomPlayer_77");
-      setView('found');
-      // Delay before redirecting to game
-      timerRef.current = setTimeout(() => {
-          navigate('/quiz?topic=random&mode=multi');
-      }, 2000);
-    }, 2500);
+    // 1. Try to join existing
+    const existingMatch = await multiplayerService.findQuickMatch(userId);
+    if (existingMatch) {
+        handleMatchFound(existingMatch);
+        return;
+    }
+
+    // 2. If no match found, create one and wait
+    const newMatch = await multiplayerService.createMatch(userId, 'random');
+    if (newMatch) {
+        setCurrentMatch(newMatch);
+        // We stay in 'quick_search' view but logically we are now waiting like a host
+        // We need to listen to this match just like room_create
+        const channel = supabase
+            .channel(`match-${newMatch.id}`)
+            .on(
+                'postgres_changes',
+                { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${newMatch.id}` },
+                (payload) => {
+                    const updatedMatch = payload.new as MultiplayerMatch;
+                    if (updatedMatch.player2_id) {
+                        handleMatchFound(updatedMatch);
+                    }
+                }
+            )
+            .subscribe();
+    } else {
+        setError("Не удалось создать матч");
+        setView('menu');
+    }
   };
 
   const startCreateRoomFlow = () => {
       setView('topic_selection');
   };
 
-  const confirmRoomCreation = (topicId: string) => {
-    if (!topicId.trim()) return;
+  const confirmRoomCreation = async (topicId: string) => {
+    if (!topicId.trim() || !userId) return;
     
     setSelectedTopic(topicId);
-    // Generate random code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    setRoomCode(code);
-    setView('room_create');
+    setIsJoining(true); // show generic loader while creating
     
-    // Simulate someone joining after 4 seconds
-    timerRef.current = setTimeout(() => {
-        setOpponent("Friend_Pro");
-        setView('found');
-        timerRef.current = setTimeout(() => {
-            navigate(`/quiz?topic=${encodeURIComponent(topicId)}&mode=multi`);
-        }, 2000);
-    }, 4000);
+    const match = await multiplayerService.createMatch(userId, topicId);
+    if (match) {
+        setRoomCode(match.code);
+        setCurrentMatch(match);
+        setView('room_create');
+        setIsJoining(false);
+    } else {
+        setError("Ошибка создания комнаты");
+    }
   };
 
-  const joinRoom = () => {
-      if(joinCode.length < 4) return;
+  const joinRoom = async () => {
+      if(joinCode.length < 3 || !userId) return;
       
       setError(null);
       setIsJoining(true);
-      setView('quick_search'); // Show loader
       
-      timerRef.current = setTimeout(() => {
-        // MOCK VALIDATION LOGIC
-        // Only allow entry if code is '777777' OR matches the locally generated roomCode
-        const isValid = joinCode === '777777' || (roomCode && joinCode === roomCode);
-
-        if (isValid) {
-            const mockRoomTopic = 'random'; 
-            setOpponent("Host_Master");
-            setView('found');
-            timerRef.current = setTimeout(() => {
-                navigate(`/quiz?topic=${mockRoomTopic}&mode=multi`);
-            }, 1500);
+      try {
+        const match = await multiplayerService.joinMatch(joinCode, userId);
+        if (match) {
+            handleMatchFound(match);
         } else {
-            // Failed to find room
+            setError("Комната не найдена или уже занята");
             setIsJoining(false);
-            setError("Комната не найдена");
-            setView('room_menu');
         }
-      }, 2000);
+      } catch (e) {
+          console.error(e);
+          setError("Ошибка сети");
+          setIsJoining(false);
+      }
   }
 
   // -- Renders --
@@ -122,7 +168,7 @@ const Multiplayer: React.FC = () => {
                 </div>
                 <div className="text-left flex-1">
                     <h3 className="font-bold text-lg">Быстрая игра</h3>
-                    <p className="text-xs text-white/50">Случайная тема • Случайный враг</p>
+                    <p className="text-xs text-white/50">Поиск реального игрока</p>
                 </div>
                 <ArrowRight size={20} className="text-white/30 group-hover:translate-x-1 transition-transform"/>
             </div>
@@ -155,7 +201,7 @@ const Multiplayer: React.FC = () => {
                   <Lock size={32} />
               </div>
               <h3 className="font-bold text-xl">Создать комнату</h3>
-              <p className="text-xs text-white/50 mt-1">Ты выберешь тему и получишь код</p>
+              <p className="text-xs text-white/50 mt-1">Ты получишь код для друга</p>
           </GlassCard>
 
           <div className="relative">
@@ -180,10 +226,10 @@ const Multiplayer: React.FC = () => {
                     />
                     <button 
                         onClick={joinRoom}
-                        disabled={joinCode.length < 3}
+                        disabled={joinCode.length < 3 || isJoining}
                         className="bg-white text-black font-bold px-6 rounded-xl m-1 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-200 transition-colors"
                     >
-                        Войти
+                        {isJoining ? <Loader2 className="animate-spin"/> : "Войти"}
                     </button>
                   </div>
                   {error && (
@@ -194,10 +240,6 @@ const Multiplayer: React.FC = () => {
                   )}
               </div>
           </GlassCard>
-          
-          <div className="text-center">
-             <p className="text-[10px] text-white/20">Для теста используйте код: 777777</p>
-          </div>
       </div>
   );
 
@@ -224,10 +266,10 @@ const Multiplayer: React.FC = () => {
                 />
                 <button 
                     onClick={() => confirmRoomCreation(customTopic)}
-                    disabled={!customTopic.trim()}
+                    disabled={!customTopic.trim() || isJoining}
                     className="bg-pink-500/80 hover:bg-pink-400 disabled:opacity-50 disabled:cursor-not-allowed p-1.5 rounded-lg transition-all"
                 >
-                    <ArrowRight size={16} />
+                   {isJoining ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
                 </button>
                 </div>
             </GlassCard>
@@ -263,11 +305,10 @@ const Multiplayer: React.FC = () => {
   );
 
   const renderRoomCreate = () => {
-    // Determine display name for topic
     let displayTopic = 'Случайная';
     if (selectedTopic !== 'random') {
         const found = POPULAR_TOPICS.find(t => t.id === selectedTopic);
-        displayTopic = found ? found.name : selectedTopic; // Use custom string if not found in constants
+        displayTopic = found ? found.name : selectedTopic;
     }
 
     return (
@@ -301,7 +342,6 @@ const Multiplayer: React.FC = () => {
   return (
     <div className="h-[calc(100vh-80px)] px-4 flex flex-col items-center justify-center space-y-8">
       
-      {/* Avatar / Status Visual */}
       <div className="relative shrink-0">
         {(view === 'quick_search' || view === 'room_create' || view === 'room_join') && (
           <>
@@ -317,10 +357,9 @@ const Multiplayer: React.FC = () => {
 
       <div className="text-center space-y-1 shrink-0">
         <h1 className="text-2xl font-bold">PvP Арена</h1>
-        <p className="text-white/50 text-sm">Сражайся и побеждай</p>
+        <p className="text-white/50 text-sm">Реальные соперники</p>
       </div>
 
-      {/* View Switcher */}
       {view === 'menu' && renderMenu()}
       {view === 'room_menu' && renderRoomMenu()}
       {view === 'topic_selection' && renderTopicSelection()}
@@ -329,10 +368,10 @@ const Multiplayer: React.FC = () => {
       {view === 'quick_search' && (
           <GlassCard className="w-full max-w-sm text-center py-8">
              <p className="text-lg animate-pulse mb-4">
-                 {isJoining ? 'Подключение к комнате...' : 'Поиск соперника...'}
+                 Поиск соперника...
              </p>
              <LoaderDots />
-             {!isJoining && <p className="text-xs text-white/30 mt-4">Тема: Случайная</p>}
+             <p className="text-xs text-white/30 mt-4">Мы ищем открытую комнату или создаем новую.</p>
              <button onClick={handleCancel} className="mt-4 text-sm text-white/30">Отмена</button>
           </GlassCard>
       )}
@@ -340,14 +379,14 @@ const Multiplayer: React.FC = () => {
       {view === 'found' && (
            <GlassCard className="w-full max-w-sm space-y-4 animate-scale-in border-green-500/50 bg-green-900/20">
              <p className="text-green-400 font-bold tracking-widest uppercase text-center text-sm">
-                 {isJoining ? 'Вход выполнен!' : 'Игра найдена!'}
+                 Матч найден!
              </p>
              <div className="flex items-center space-x-4 p-2">
                 <div className="w-10 h-10 rounded-full bg-gray-500 flex items-center justify-center">
                     <User size={20} />
                 </div>
                 <div className="text-left">
-                    <p className="font-bold">{opponent}</p>
+                    <p className="font-bold">Соперник подключен</p>
                     <p className="text-xs text-white/50">
                         {selectedTopic === 'random' ? 'Случайная тема' : 
                          POPULAR_TOPICS.find(t => t.id === selectedTopic)?.name || selectedTopic}
