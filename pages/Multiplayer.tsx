@@ -36,12 +36,15 @@ const Multiplayer: React.FC = () => {
   }, []);
 
   // -- CENTRALIZED WAITING LOGIC (Fixes sync issues) --
-  // This effect runs whenever we have a match that is in 'waiting' status.
-  // It uses both Realtime sockets AND a polling interval as a backup.
   useEffect(() => {
     if (!currentMatch || currentMatch.status !== 'waiting') return;
 
     const matchId = currentMatch.id;
+
+    // Validate if the match found is valid (not self-play, actually has P2)
+    const isValidStart = (m: MultiplayerMatch) => {
+        return m.player2_id && m.status === 'playing' && m.player2_id !== userId;
+    }
 
     // 1. Check logic to handle "Match Found"
     const checkMatchStatus = async () => {
@@ -51,7 +54,7 @@ const Multiplayer: React.FC = () => {
             .eq('id', matchId)
             .single();
         
-        if (data && data.player2_id && data.status === 'playing') {
+        if (data && isValidStart(data as MultiplayerMatch)) {
             handleMatchFound(data as MultiplayerMatch);
         }
     };
@@ -64,21 +67,21 @@ const Multiplayer: React.FC = () => {
             { event: 'UPDATE', schema: 'public', table: 'matches', filter: `id=eq.${matchId}` },
             (payload) => {
                 const updatedMatch = payload.new as MultiplayerMatch;
-                if (updatedMatch.player2_id && updatedMatch.status === 'playing') {
+                if (isValidStart(updatedMatch)) {
                     handleMatchFound(updatedMatch);
                 }
             }
         )
         .subscribe();
 
-    // 3. Polling Interval (Backup every 2 seconds in case Realtime fails)
+    // 3. Polling Interval
     const intervalId = setInterval(checkMatchStatus, 2000);
 
     return () => {
         supabase.removeChannel(channel);
         clearInterval(intervalId);
     };
-  }, [currentMatch]); // Only re-run if currentMatch object changes identity or status
+  }, [currentMatch, userId]);
 
   // -- Actions --
 
@@ -94,7 +97,12 @@ const Multiplayer: React.FC = () => {
       }, 1500);
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
+    // If we cancel, try to delete the match if we were the host to clean up
+    if (currentMatch && currentMatch.player1_id === userId && currentMatch.status === 'waiting') {
+        await supabase.from('matches').delete().eq('id', currentMatch.id);
+    }
+    
     setIsJoining(false);
     setError(null);
     setView('menu');
@@ -107,7 +115,7 @@ const Multiplayer: React.FC = () => {
   }
 
   const startQuickSearch = async () => {
-    if (!userId) return;
+    if (!userId || isJoining) return;
     setView('quick_search');
     setIsJoining(true);
     setSelectedTopic('random'); 
@@ -116,17 +124,19 @@ const Multiplayer: React.FC = () => {
     const existingMatch = await multiplayerService.findQuickMatch(userId);
     if (existingMatch) {
         handleMatchFound(existingMatch);
+        setIsJoining(false);
         return;
     }
 
     // 2. If no match found, create one and wait
-    // We set currentMatch, which triggers the useEffect above to start listening/polling
     const newMatch = await multiplayerService.createMatch(userId, 'random');
     if (newMatch) {
         setCurrentMatch(newMatch);
+        // Do NOT set isJoining to false here, we are technically "joining/waiting"
     } else {
         setError("Не удалось создать матч");
         setView('menu');
+        setIsJoining(false);
     }
   };
 
@@ -135,10 +145,10 @@ const Multiplayer: React.FC = () => {
   };
 
   const confirmRoomCreation = async (topicId: string) => {
-    if (!topicId.trim() || !userId) return;
+    if (!topicId.trim() || !userId || isJoining) return;
     
     setSelectedTopic(topicId);
-    setIsJoining(true); // show generic loader while creating
+    setIsJoining(true); 
     
     const match = await multiplayerService.createMatch(userId, topicId);
     if (match) {
@@ -148,11 +158,12 @@ const Multiplayer: React.FC = () => {
         setIsJoining(false);
     } else {
         setError("Ошибка создания комнаты");
+        setIsJoining(false);
     }
   };
 
   const joinRoom = async () => {
-      if(joinCode.length < 3 || !userId) return;
+      if(joinCode.length < 3 || !userId || isJoining) return;
       
       setError(null);
       setIsJoining(true);
@@ -163,11 +174,11 @@ const Multiplayer: React.FC = () => {
             handleMatchFound(match);
         } else {
             setError("Комната не найдена или уже занята");
-            setIsJoining(false);
         }
       } catch (e) {
           console.error(e);
           setError("Ошибка сети");
+      } finally {
           setIsJoining(false);
       }
   }
