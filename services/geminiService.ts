@@ -1,11 +1,31 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from "../types";
 
-// The API key must be obtained exclusively from process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Safe access to process.env.API_KEY to prevent "process is undefined" errors
+const getApiKey = () => {
+    try {
+        if (typeof process !== 'undefined' && process.env) {
+            return process.env.API_KEY || '';
+        }
+        // Fallback for some window polyfills
+        if (typeof window !== 'undefined' && (window as any).process && (window as any).process.env) {
+            return (window as any).process.env.API_KEY || '';
+        }
+    } catch (e) {
+        return '';
+    }
+    return '';
+}
+
+const apiKey = getApiKey();
+const ai = new GoogleGenAI({ apiKey });
 
 export const generateQuestions = async (topic: string, count: number = 10): Promise<Question[]> => {
-  // Removed explicit API key check as we assume process.env.API_KEY is configured.
+  // If no API key is present, return mock data immediately to avoid API errors
+  if (!apiKey || apiKey === 'undefined') {
+    console.warn("No API key found. Returning mock questions.");
+    return mockQuestions(topic);
+  }
 
   const model = "gemini-3-flash-preview";
   
