@@ -69,16 +69,16 @@
         background: transparent;
       }
     </style>
-    <!-- Importmap удален, так как Vercel собирает проект через Vite/Webpack и использует package.json -->
+    <!-- Importmap удален для корректной сборки Vercel -->
 <script type="importmap">
 {
   "imports": {
     "react/": "https://esm.sh/react@^19.2.4/",
     "react": "https://esm.sh/react@^19.2.4",
+    "@google/genai": "https://esm.sh/@google/genai@^1.39.0",
+    "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
     "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
-    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
-    "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0",
     "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.93.3"
   }
 }
