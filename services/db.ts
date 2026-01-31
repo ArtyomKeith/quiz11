@@ -2,10 +2,9 @@ import { supabase } from './supabase';
 import { PlayerProfile } from '../types';
 import { MOCK_LEADERBOARD } from '../constants';
 
-// Меняем версию ключа на v4, чтобы сгенерировать новый корректный UUID
 const LOCAL_ID_KEY = 'glassmind_user_id_v4';
 
-// Функция генерации настоящего UUID, который нравится базам данных
+// Fallback UUID generation for browser testing (when not in Telegram)
 const generateUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -17,10 +16,17 @@ const generateUUID = () => {
   });
 };
 
-const getDeviceId = () => {
+// Main function to identify the user
+const getUserId = () => {
+  // 1. Try to get Telegram ID
+  const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+  if (tgUser && tgUser.id) {
+    return String(tgUser.id);
+  }
+
+  // 2. Fallback to LocalStorage (Browser Dev Mode)
   let id = localStorage.getItem(LOCAL_ID_KEY);
-  // Проверяем, что ID похож на UUID (длина 36), если нет — пересоздаем
-  if (!id || id.length !== 36) {
+  if (!id || id.length < 10) {
     id = generateUUID();
     localStorage.setItem(LOCAL_ID_KEY, id);
   }
@@ -28,10 +34,8 @@ const getDeviceId = () => {
 };
 
 export const db = {
-  // Проверка соединения для отладки
   checkConnection: async (): Promise<string | null> => {
     try {
-      // Пытаемся просто прочитать любую запись
       const { error } = await supabase.from('profiles').select('id').limit(1);
       if (error) return error.message;
       return null;
@@ -41,49 +45,78 @@ export const db = {
   },
 
   getUser: async (): Promise<PlayerProfile> => {
-    const userId = getDeviceId();
+    // Notify Telegram we are ready (expands window if needed)
+    if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+    }
 
-    const { data, error } = await supabase
+    const userId = getUserId();
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+
+    // 1. Try to fetch existing user
+    const { data: existingUser, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
       .single();
 
-    if (data) {
-      // Возвращаем данные. Rank вычисляется динамически, поэтому если его нет в БД — ставим 0
-      return { ...data, rank: data.rank || 0 } as PlayerProfile;
+    if (existingUser) {
+        // If we have Telegram data, let's update the profile name/avatar to match Telegram 
+        // (in case user changed it)
+        if (tgUser) {
+            const newName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ');
+            const newAvatar = tgUser.photo_url || existingUser.avatar; // Use TG photo or keep existing
+            
+            // Only update if something changed
+            if (newName !== existingUser.name || (tgUser.photo_url && tgUser.photo_url !== existingUser.avatar)) {
+                await supabase.from('profiles').update({
+                    name: newName,
+                    avatar: newAvatar
+                }).eq('id', userId);
+                
+                return { ...existingUser, name: newName, avatar: newAvatar, rank: existingUser.rank || 0 };
+            }
+        }
+        return { ...existingUser, rank: existingUser.rank || 0 } as PlayerProfile;
     }
 
-    // Если пользователя нет, создаем объект для БД (БЕЗ поля rank, так как его нет в таблице)
-    const dbUser = {
+    // 2. User not found -> Create new one
+    // Determine Name and Avatar
+    let userName = 'Новичок ' + Math.floor(Math.random() * 100);
+    let userAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`;
+
+    if (tgUser) {
+        userName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ');
+        if (tgUser.photo_url) userAvatar = tgUser.photo_url;
+    }
+
+    const newUser = {
       id: userId,
-      name: 'Новичок ' + Math.floor(Math.random() * 100),
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-      points: 100, // Стартовый бонус
+      name: userName,
+      avatar: userAvatar,
+      points: 100, // Welcome bonus
       streak: 0
     };
 
-    // Пытаемся сохранить в базу только существующие поля
     const { error: insertError } = await supabase
       .from('profiles')
-      .insert([dbUser]);
+      .insert([newUser]);
 
     if (insertError) {
       console.error("Ошибка при создании профиля:", insertError);
-      // Если ошибка базы, мы все равно вернем объект локально, чтобы приложение работало
     }
 
-    // Возвращаем полноценный объект для UI с полем rank
     return {
-      ...dbUser,
+      ...newUser,
       rank: 0
     };
   },
 
   addPoints: async (amount: number): Promise<void> => {
-    const userId = getDeviceId();
+    const userId = getUserId();
     
-    // 1. Пробуем получить текущие данные
+    // Optimistic update logic
     const { data: currentUser, error: fetchError } = await supabase
       .from('profiles')
       .select('points, streak')
@@ -91,41 +124,22 @@ export const db = {
       .single();
 
     if (fetchError || !currentUser) {
-        console.log("Пользователь не найден при начислении. Создаем...");
-        
-        const { error: createError } = await supabase.from('profiles').insert([{
-            id: userId,
-            name: 'Игрок ' + Math.floor(Math.random() * 1000),
-            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-            points: 100 + amount,
-            streak: 1
-            // rank не передаем, чтобы избежать ошибки
-        }]);
-
-        if (createError) {
-            console.error("CRITICAL DB ERROR:", createError);
-            throw createError; // Это покажет ошибку в UI
-        }
+        // This shouldn't happen if getUser was called first, but safe fallback
+        console.warn("User missing during point add, skipping");
         return;
     }
 
-    // Обновление
     const newPoints = (currentUser.points || 0) + amount;
     const newStreak = (currentUser.streak || 0) + 1;
 
-    const { error } = await supabase
+    await supabase
       .from('profiles')
       .update({ points: newPoints, streak: newStreak })
       .eq('id', userId);
-
-    if (error) {
-        console.error("Ошибка обновления:", error);
-        throw error;
-    }
   },
 
   resetStreak: async (): Promise<void> => {
-    const userId = getDeviceId();
+    const userId = getUserId();
     await supabase
       .from('profiles')
       .update({ streak: 0 })
@@ -143,7 +157,6 @@ export const db = {
       return MOCK_LEADERBOARD;
     }
 
-    // Rank вычисляем на лету по индексу в сортированном массиве
     return data.map((user, index) => ({
       ...user,
       rank: index + 1
